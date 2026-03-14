@@ -4,7 +4,6 @@ Vous trouverez ici la réalisation d’un projet de première année à l’ENSA
 
 Ce projet a été réalisé dans le cadre d’un travail académique visant à appliquer des méthodes de **data science, d’analyse statistique et de visualisation de données** sur un jeu de données issu d’une compagnie d’assurance fictive : **ENSAssuRances**.
 
----
 
 # Objectif du projet
 
