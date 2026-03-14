@@ -1,0 +1,537 @@
+---
+title: "ENSAssurances - ACP, K-means, CAH et tests statistiques"
+author: "Théo Roussel"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+    theme: cosmo
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 8,
+  fig.height = 5.5,
+  fig.align = "center"
+)
+```
+
+# Objectif
+
+Ce document propose une analyse* de :
+
+- l'**ACP**
+- le **K-means**
+- la **CAH**
+- quelques **tests statistiques**
+
+à partir de `data/processed/dataset_final.csv`.
+
+
+# Packages
+
+```{r packages}
+library(tidyverse)
+library(FactoMineR)
+library(factoextra)
+library(corrplot)
+library(janitor)
+library(factoextra)
+```
+
+# Importation des données
+
+
+```{r import}
+df <- readr::read_csv("data/processed/dataset_final.csv", show_col_types = FALSE) %>%
+  janitor::clean_names()
+
+dim(df)
+head(df, 3)
+```
+
+# Choix des variables quantitatives
+
+
+```{r vars}
+vars_quanti <- c(
+  "mt_regl",
+  "drv1age",
+  "vh_age",
+  "vh_value"
+)
+
+vars_quanti <- vars_quanti[vars_quanti %in% names(df)]
+vars_quanti
+```
+
+```{r df-quanti}
+df_quanti <- df %>%
+  select(all_of(vars_quanti)) %>%
+  mutate(across(everything(), as.numeric)) %>%
+  drop_na()
+
+dim(df_quanti)
+summary(df_quanti)
+```
+
+> **Explication du choix des variables**  
+
+Pour l’analyse multivariée (ACP, K-means et CAH), il est nécessaire de sélectionner uniquement des **variables quantitatives pertinentes**, afin d’éviter d’introduire des variables catégorielles ou des identifiants qui pourraient perturber l’interprétation.
+
+Les variables ont été choisies afin de représenter **les caractéristiques principales du sinistre, du conducteur et du véhicule**, tout en conservant un nombre limité de variables afin de faciliter l’interprétation des résultats.
+
+Les variables retenues sont :
+
+- `mt_regl` : montant réellement réglé du sinistre ;
+- `drv1age` : âge du conducteur principal ;
+- `vh_age` : âge du véhicule ;
+- `vh_value` : valeur estimée du véhicule.
+
+Ces variables permettent d’étudier plusieurs dimensions importantes :
+
+- **le coût du sinistre**, à travers le montant réglé (`mt_regl`) ;
+- **le profil du conducteur**, représenté par l’âge du conducteur (`drv1age`) ;
+- **les caractéristiques du véhicule**, via l’âge du véhicule (`vh_age`) et sa valeur (`vh_value`).
+
+Ce choix de variables permet ainsi d’analyser les relations entre **le coût des sinistres, le profil des conducteurs et les caractéristiques des véhicules**, tout en conservant un modèle suffisamment simple pour être interprété facilement dans les méthodes d’analyse de données utilisées.
+
+# Aperçu rapide
+
+## Corrélations
+
+```{r corr}
+cor_mat <- cor(df_quanti)
+corrplot(cor_mat, method = "color", type = "upper", tl.cex = 0.8)
+```
+
+> **Analyse de la matrice de corrélation**
+
+L’analyse de la matrice de corrélation montre que la majorité des variables présentent des corrélations relativement faibles entre elles. Cela indique que chaque variable apporte une information spécifique et complémentaire pour l’analyse multivariée.
+
+On observe néanmoins une corrélation négative notable entre **l’âge du véhicule (`vh_age`) et sa valeur (`vh_value`)**. Cette relation est cohérente d’un point de vue économique : plus un véhicule est ancien, plus sa valeur a tendance à diminuer en raison du phénomène de dépréciation.
+
+Les autres variables, notamment **l’âge du conducteur (`drv1age`)** et **le montant du sinistre réglé (`mt_regl`)**, semblent relativement indépendantes des caractéristiques du véhicule, ce qui suggère qu’elles capturent des dimensions différentes du phénomène étudié.
+
+Globalement, ces résultats confirment que les variables sélectionnées apportent des informations complémentaires et sont donc pertinentes pour la réalisation de l’ACP ainsi que pour les méthodes de classification utilisées par la suite.
+
+## Histogrammes
+
+```{r hist}
+df_quanti %>%
+  pivot_longer(cols = everything(), names_to = "variable", values_to = "valeur") %>%
+  ggplot(aes(x = valeur)) +
+  geom_histogram(bins = 30, fill = "steelblue", color = "white") +
+  facet_wrap(~ variable, scales = "free") +
+  theme_minimal() +
+  labs(title = "Distribution des variables quantitatives")
+```
+
+# ACP
+
+L’analyse en composantes principales (ACP) est réalisée sur les variables quantitatives **centrées-réduites**, afin de neutraliser les différences d’échelle entre les variables.
+
+Comme la base contient un nombre important d’observations, l’ACP est réalisée ici sur un **échantillon aléatoire de 4000 individus**, ce qui permet de conserver une structure représentative des données tout en limitant le temps de calcul et en gardant des graphiques lisibles.
+
+```{r acp-sample}
+set.seed(123)
+n_acp <- min(4000, nrow(df_quanti))
+df_acp <- df_quanti %>% slice_sample(n = n_acp)
+
+dim(df_acp)
+```
+ 
+## Calcul de l'ACP
+
+```{r acp}
+res_pca <- PCA(df_acp, scale.unit = TRUE, graph = FALSE)
+res_pca$eig
+```
+
+## Éboulis des valeurs propres
+
+```{r eig}
+fviz_eig(res_pca, addlabels = TRUE) +
+  labs(title = "Éboulis des valeurs propres")
+```
+
+## Variance cumulée expliquée
+
+```{r var}
+variance_expliquee <- as.data.frame(res_pca$eig)
+variance_expliquee$Dimension <- paste0("Dim", 1:nrow(variance_expliquee))
+variance_expliquee$Variance_cumulee <- cumsum(variance_expliquee[, 2])
+
+variance_expliquee
+```
+
+## Nombre de dimensions à retenir pour expliquer 80 % de la variance
+
+```{r nb_dim}
+nb_dim_80 <- which(cumsum(res_pca$eig[, 2]) >= 80)[1]
+nb_dim_80
+```
+
+
+## Cercle des corrélations
+
+```{r acp-var}
+fviz_pca_var(
+  res_pca,
+  col.var = "contrib",
+  gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+  repel = TRUE
+) +
+  labs(title = "Cercle des corrélations")
+```
+
+## Nuage des individus
+
+```{r acp-ind}
+fviz_pca_ind(
+  res_pca,
+  geom = "point",
+  col.ind = "steelblue",
+  alpha.ind = 0.5,
+  pointsize = 1
+) +
+  labs(title = "Projection des individus sur le plan")
+```
+
+## Contribution des variables aux deux premiers axes
+
+```{r acp-contrib}
+res_pca$var$contrib[, 1:2]
+```
+
+
+> **Interprétation des résultats de l'ACP**
+
+**Variance expliquée**
+
+L’analyse des valeurs propres montre que la première composante principale explique **31,8 % de la variance totale**, tandis que la seconde explique **25,3 %**. Les deux premiers axes résument donc environ **57,1 % de l'information totale** contenue dans les données.
+
+L’étude de la variance cumulée indique que les **trois premières composantes principales expliquent environ 81,6 % de la variance totale**. Il est pertinent de retenir ces dimensions qui permettent de résumer efficacement la structure des données tout en réduisant la dimension de l’espace d’analyse**.
+
+**Interprétation de l’axe 1**
+
+L’examen du cercle des corrélations et des contributions des variables montre que la première dimension est principalement influencée par les variables :
+
+- **vh_age**
+- **vh_value**
+
+Ces deux variables contribuent chacune à environ **50 % de la construction de l’axe 1**, ce qui indique qu’elles jouent un rôle central dans la structuration de cette dimension.
+
+De plus, ces variables apparaissent dans des directions opposées sur le cercle des corrélations. Cela traduit une **relation inverse entre l’âge du véhicule et sa valeur** : les véhicules plus récents ont généralement une valeur plus élevée, tandis que les véhicules plus anciens ont une valeur plus faible.
+
+Ainsi, **l’axe 1 peut être interprété comme une dimension représentant les caractéristiques du véhicule**, opposant les véhicules récents et de forte valeur aux véhicules plus anciens et de valeur plus faible.
+
+**Interprétation de l’axe 2**
+
+La seconde dimension est principalement influencée par les variables :
+
+- **mt_regl**
+- **drv1age**
+
+Les contributions montrent que **mt_regl contribue à près de 60 % à la construction de cet axe**, tandis que **drv1age contribue à environ 39 %**.
+
+Cet axe semble donc opposer des situations caractérisées par **des montants de sinistres plus élevés** à celles associées à **des profils de conducteurs différents en termes d’âge**.
+
+Ainsi, **l’axe 2 peut être interprété comme une dimension liée au coût du sinistre et au profil du conducteur**.
+
+**Lecture du cercle des corrélations**
+
+Le cercle des corrélations permet d’analyser les relations entre les variables :
+
+- **vh_age et vh_value** sont fortement opposées, ce qui reflète la dépréciation naturelle des véhicules avec le temps ;
+- **mt_regl** apparaît relativement indépendant des caractéristiques du véhicule ;
+- **drv1age** contribue davantage à la seconde dimension et semble représenter une information distincte liée au profil du conducteur.
+
+Globalement, le cercle des corrélations met en évidence deux logiques principales structurant les données : une logique liée **aux caractéristiques du véhicule** et une logique liée **au coût du sinistre et au profil du conducteur**.
+
+**Lecture du nuage des individus**
+
+La projection des individus sur le plan factoriel montre une forte concentration des observations autour du centre du graphique. Cela indique que la majorité des observations présentent des caractéristiques relativement proches.
+
+On observe également quelques individus plus éloignés du centre, qui peuvent correspondre à **des situations plus atypiques**, notamment des sinistres présentant des montants plus élevés.
+
+Cette représentation permet de visualiser la dispersion des observations dans l’espace factoriel et constitue une première étape avant l’application de méthodes de classification telles que **K-means ou la classification ascendante hiérarchique**.
+
+**Conclusion de l’ACP**
+
+L’analyse en composantes principales met en évidence deux dimensions principales structurant les données :
+
+- un **axe lié aux caractéristiques du véhicule**, principalement porté par l’âge et la valeur du véhicule ;
+- un **axe lié au coût du sinistre et au profil du conducteur**.
+
+Par ailleurs, les **trois premières composantes principales permettent d’expliquer plus de 80 % de la variance totale**, ce qui montre que l’essentiel de l’information contenue dans les variables initiales peut être résumé par un nombre réduit de dimensions.
+
+
+# K-means
+
+On applique K-means sur les coordonnées factorielles des 3 premiers axes.
+
+```{r kmeans-data}
+pca_scores <- as.data.frame(res_pca$ind$coord[, 1:3])
+head(pca_scores)
+```
+
+## Choix simple du nombre de clusters
+
+```{r elbow}
+fviz_nbclust(pca_scores, kmeans, method = "wss") +
+  labs(title = "Méthode du coude")
+```
+
+## K-means avec k = 3
+
+```{r kmeans}
+set.seed(123)
+res_kmeans <- kmeans(pca_scores, centers = 3, nstart = 20)
+
+table(res_kmeans$cluster)
+```
+
+## Visualisation
+
+```{r kmeans-plot}
+fviz_cluster(
+  list(data = pca_scores, cluster = res_kmeans$cluster),
+  geom = "point",
+  ellipse.type = "convex",
+  ggtheme = theme_minimal()
+)
+```
+
+## Profil moyen des clusters
+
+```{r kmeans-profile}
+df_kmeans <- df_acp %>%
+  mutate(cluster = factor(res_kmeans$cluster))
+
+df_kmeans %>%
+  group_by(cluster) %>%
+  summarise(across(everything(), mean, na.rm = TRUE))
+```
+
+> **Interprétation des résultats du K-means**  
+
+**Choix du nombre de clusters**
+
+Afin de déterminer le nombre de groupes pertinents, la méthode du **coude (WSS)** a été utilisée. Cette méthode consiste à analyser la diminution de l’inertie intra-classe lorsque le nombre de clusters augmente.
+
+Le graphique du coude montre une forte diminution de l’inertie jusqu’à **k = 3**, après quoi la réduction devient plus progressive. Cela suggère qu’un nombre de **trois clusters** constitue un compromis raisonnable entre la qualité de la partition et la simplicité du modèle. Le nombre de clusters a donc été fixé à **k = 3** pour l’algorithme K-means.
+
+
+**Répartition des observations**
+
+L’application de l’algorithme K-means conduit à la répartition suivante :
+
+- **Cluster 1 : 2257 observations**
+- **Cluster 2 : 143 observations**
+- **Cluster 3 : 1600 observations**
+
+On observe que le **cluster 1 regroupe la majorité des observations**, tandis que le **cluster 2 est beaucoup plus petit**, ce qui suggère qu’il correspond à un groupe plus atypique dans la base de données.
+
+
+**Interprétation des profils moyens**
+
+L’analyse des moyennes des variables dans chaque cluster permet de caractériser les profils des groupes obtenus.
+
+**Cluster 1 : sinistres faibles avec véhicules anciens**
+
+Le **cluster 1** regroupe la majorité des observations et se caractérise par :
+
+- un **montant moyen de sinistre relativement faible** (environ **198**) ;
+- un **âge moyen du conducteur d’environ 45 ans** ;
+- des **véhicules relativement anciens** (âge moyen d’environ **13,5 ans**) ;
+- une **valeur moyenne de véhicule plus faible** (environ **8839**).
+
+Ce cluster semble donc correspondre à des **sinistres de faible montant impliquant des véhicules plus anciens et de valeur relativement faible**.
+
+
+**Cluster 2 : sinistres élevés**
+
+Le **cluster 2** est beaucoup plus restreint mais se distingue très clairement par :
+
+- un **montant moyen de sinistre très élevé** (environ **5486**) ;
+- un **âge moyen du conducteur d’environ 43 ans** ;
+- des **véhicules d’âge intermédiaire** (environ **11 ans**) ;
+- une **valeur de véhicule moyenne d’environ 12164**.
+
+Ce cluster correspond probablement à des **sinistres plus graves ou plus coûteux**, ce qui explique sa taille plus réduite.
+
+
+**Cluster 3 : véhicules récents et de forte valeur**
+
+Le **cluster 3** présente :
+
+- un **montant moyen de sinistre faible** (environ **202**) ;
+- un **âge moyen du conducteur proche de 43 ans** ;
+- des **véhicules plus récents** (âge moyen d’environ **7,5 ans**) ;
+- une **valeur moyenne de véhicule plus élevée** (environ **16809**).
+
+Ce cluster semble donc correspondre à des **sinistres de faible montant impliquant des véhicules plus récents et plus chers**.
+
+
+**Lecture globale des clusters**
+
+L’analyse des clusters met en évidence **trois profils principaux** :
+
+1. **Cluster 1 : sinistres faibles sur véhicules anciens et de valeur plus faible.**
+2. **Cluster 2 : sinistres élevés représentant un groupe plus atypique.**
+3. **Cluster 3 : sinistres faibles sur véhicules plus récents et de valeur élevée.**
+
+Les variables qui semblent jouer le rôle le plus discriminant entre les groupes sont **le montant du sinistre (`mt_regl`) ainsi que les caractéristiques du véhicule (`vh_age` et `vh_value`)**, ce qui est cohérent avec les résultats observés précédemment dans l’analyse en composantes principales.
+
+Globalement, le clustering permet d’identifier différents **profils de sinistres et de véhicules**, ce qui permet de mieux comprendre la structure des observations présentes dans la base de données.
+
+# CAH
+
+Pour garder quelque chose de rapide, on fait la CAH sur un petit échantillon.
+
+```{r cah-sample}
+set.seed(123)
+
+n_cah <- min(150, nrow(pca_scores))
+pca_cah <- pca_scores %>% slice_sample(n = n_cah)
+```
+
+## Dendrogramme
+
+```{r cah}
+dist_cah <- dist(pca_cah, method = "euclidean")
+hc <- hclust(dist_cah, method = "ward.D2")
+
+fviz_dend(
+  hc,
+  k = 3,
+  rect = TRUE,
+  rect_fill = TRUE,
+  show_labels = FALSE,
+  k_colors = c("#2E86AB","#F18F01","#C73E1D"),
+  main = "Dendrogramme - CAH",
+  ggtheme = theme_minimal()
+)
+```
+
+## Profils moyens
+
+```{r cah-profile}
+clusters_cah <- cutree(hc, k = 3)
+
+df_cah <- df_quanti %>% slice_sample(n = n_cah)
+
+df_cah %>%
+  mutate(cluster_cah = factor(clusters_cah)) %>%
+  group_by(cluster_cah) %>%
+  summarise(across(everything(), mean, na.rm = TRUE))
+```
+
+> **Comparaison entre la CAH et le K-means**  
+
+La classification ascendante hiérarchique (CAH) a été réalisée sur les coordonnées factorielles issues de l’ACP, comme pour l’algorithme K-means. Cette démarche permet de comparer deux méthodes de classification appliquées sur un même espace de représentation des données.
+
+Le dendrogramme obtenu avec la méthode de Ward met en évidence une structure hiérarchique des observations. En découpant l’arbre en **trois groupes**, on obtient une partition comparable à celle retenue précédemment avec le K-means.
+
+L’analyse des profils moyens issus de la CAH montre les caractéristiques suivantes :
+
+- le **cluster 1** présente un montant moyen réglé d’environ **495**, un âge moyen du conducteur de **40,4 ans**, un âge moyen du véhicule de **10,3 ans** et une valeur moyenne du véhicule de **11 383** ;
+- le **cluster 2** regroupe des conducteurs plus âgés (**47,6 ans** en moyenne), avec des véhicules d’âge proche (**10,4 ans**) et une valeur moyenne légèrement plus élevée (**11 891**), pour un montant moyen réglé d’environ **361** ;
+- le **cluster 3** se caractérise par des véhicules plus récents (**8,98 ans**) mais de valeur plus faible (**7 860**), avec un montant moyen réglé plus élevé (**525**).
+
+Ces résultats montrent que la CAH met également en évidence plusieurs profils distincts, même si la structure obtenue n’est pas exactement identique à celle du K-means. Cela est normal, car les deux méthodes reposent sur des logiques différentes.
+
+- le **K-means** cherche à partitionner directement les observations en groupes homogènes ;
+- la **CAH** construit progressivement les groupes en fusionnant les individus les plus proches.
+
+Malgré ces différences, les deux approches mettent en évidence une segmentation des observations selon des critères liés au **montant du sinistre**, à **l’âge du conducteur**, ainsi qu’aux **caractéristiques du véhicule**.
+
+L’utilisation conjointe du K-means et de la CAH permet ainsi de renforcer l’analyse en montrant que la structure des données ne dépend pas uniquement d’une seule méthode de classification.
+
+# Tests statistiques
+## Test de corrélation de Pearson
+
+Le test de corrélation de Pearson permet d’étudier la relation linéaire entre deux variables quantitatives.
+
+```{r t-test}
+df_cor <- df %>%
+  select(mt_eval, mt_regl) %>%
+  drop_na()
+
+cor.test(df_cor$mt_eval, df_cor$mt_regl, method = "pearson")
+```
+
+## Test du Chi-deux
+
+Le test du Chi-deux permet d’étudier l’existence d’une relation entre deux variables qualitatives.  
+Dans ce cas, on teste l’indépendance entre le **sexe du conducteur (`drv1sex`)** et le **statut de jeune conducteur (`jeune_conducteur`)**, afin de vérifier si la répartition des jeunes conducteurs diffère selon le sexe.
+
+```{r}
+df_chi2 <- df %>%
+  select(drv1sex, jeune_conducteur) %>%
+  drop_na()
+
+tab_chi2 <- table(df_chi2$drv1sex, df_chi2$jeune_conducteur)
+
+tab_chi2
+chisq.test(tab_chi2)
+
+```
+
+
+> **Analyse des tests statistiques**  
+
+**Test de corrélation de Pearson**
+
+Le test de corrélation de Pearson a été réalisé afin d’étudier la relation linéaire entre le **montant évalué du sinistre (`mt_eval`)** et le **montant réglé (`mt_regl`)**.
+
+Le coefficient de corrélation estimé est **0.998**, ce qui indique une **corrélation positive extrêmement forte** entre ces deux variables.
+
+La **p-value est inférieure à 2.2e-16**, largement inférieure au seuil de 5 %. On rejette donc l’hypothèse nulle selon laquelle la corrélation serait nulle. On peut ainsi conclure qu’il existe **une relation linéaire statistiquement significative entre le montant évalué et le montant réglé du sinistre**.
+
+L’intervalle de confiance à 95 % du coefficient de corrélation est compris entre **0.99798 et 0.99807**, ce qui confirme la **stabilité et la très forte intensité de cette relation**.
+
+Ce résultat est cohérent d’un point de vue métier : le montant effectivement réglé par l’assurance est généralement très proche du montant initialement évalué pour le sinistre sauf en cas d'erreur des experts.
+
+**Test du Chi-deux**
+
+Le test du Chi-deux donne les résultats suivants :
+
+- statistique du test : **χ² = 0.664**
+- degrés de liberté : **df = 1**
+- **p-value = 0.415**
+
+La **p-value est largement supérieure au seuil de 5 %**, ce qui signifie que l’on **ne rejette pas l’hypothèse nulle d’indépendance**.
+
+On ne met donc **pas en évidence de relation statistiquement significative entre le sexe du conducteur et le fait d’être jeune conducteur** dans cet échantillon.
+
+Autrement dit, la proportion de jeunes conducteurs semble **relativement similaire entre les hommes et les femmes**, et la variable *sexe du conducteur* ne semble pas être associée au statut de jeune conducteur dans cette base de données.
+
+**Conclusion des tests**
+
+Les tests statistiques mettent en évidence deux résultats principaux :
+
+- une **corrélation très forte et statistiquement significative** entre le **montant évalué (`mt_eval`)** et le **montant réglé (`mt_regl`)** des sinistres ;
+- **aucune relation statistiquement significative** entre le **sexe du conducteur (`drv1sex`)** et le **statut de jeune conducteur (`jeune_conducteur`)**.
+
+Ces résultats permettent de mieux comprendre les relations entre certaines variables du portefeuille d’assurance étudié et viennent compléter l’analyse exploratoire ainsi que les méthodes de classification appliquées précédemment.
+
+# Conclusion finale
+
+L’analyse exploratoire et les différentes méthodes statistiques appliquées permettent de mieux comprendre la structure du portefeuille étudié.
+
+L’**analyse en composantes principales (ACP)** a permis de résumer l’information contenue dans les variables quantitatives et de mettre en évidence les relations principales entre les variables, notamment la forte relation entre les montants évalués et réglés des sinistres.
+
+La **classification K-means**, réalisée sur les coordonnées factorielles issues de l’ACP, a permis d’identifier plusieurs profils d’observations. Les clusters obtenus mettent notamment en évidence des différences liées aux caractéristiques des véhicules et aux montants des sinistres.
+
+La **classification ascendante hiérarchique (CAH)** confirme globalement cette structuration des données. Bien que réalisée sur un échantillon plus restreint pour des raisons de calcul, elle met également en évidence des groupes d’observations aux caractéristiques similaires, ce qui renforce la cohérence des résultats obtenus avec le K-means.
+
+Enfin, les **tests statistiques** ont permis de compléter l’analyse. Le test de corrélation de Pearson montre une relation très forte entre le montant évalué et le montant réglé des sinistres, tandis que le test du Chi-deux n’a pas mis en évidence de relation significative entre le sexe du conducteur et le statut de jeune conducteur.
+
+Dans l’ensemble, ces différentes approches offrent une vision cohérente de la structure des données et permettent de mieux caractériser les profils présents dans le portefeuille d’assurance étudié.
